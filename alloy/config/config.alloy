@@ -1,0 +1,47 @@
+local.file_match "local_files" {
+  path_targets = [
+    {"__path__" = "/val/log/service/**/*.txt"},
+  ]
+  sync_period = "5s"
+}
+
+loki.source.file "log_scrape" {
+  targets    = local.file_match.local_files.targets
+  forward_to = [loki.process.filter_logs.receiver]
+  tail_from_end = true
+  
+  // 注意：loki.source.file 组件本身没有直接的 labels 参数
+  // 标签需要通过 loki.process 阶段添加
+}
+
+loki.process "filter_logs" {
+
+
+  // 第一阶段：添加静态标签（包括job标签来标识服务）
+  stage.static_labels {
+    values = {
+      job = "service", 
+    }
+  }
+  
+  // 第二阶段：您的过滤规则
+  stage.drop {
+    source = ""
+    expression  = ".*Connection closed by authenticating user root"
+    drop_counter_reason = "noisy"
+  }
+
+  // 第三阶段：过滤空行（包括只有空格的行）
+  stage.drop {
+    expression = "^\\s*$"
+    drop_counter_reason = "empty_line"
+  }
+  
+  forward_to = [loki.write.grafana_loki.receiver]
+}
+
+loki.write "grafana_loki" {
+  endpoint {
+    url = "http://172.31.6.1:3100/loki/api/v1/push"
+  }
+}
