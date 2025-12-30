@@ -1,0 +1,56 @@
+version: '3.8'
+
+services:
+  grafana:
+    image: registry.cn-beijing.aliyuncs.com/vtm/grafana:latest
+    container_name: monitor_grafana
+    user: "1000:1000"
+    volumes:
+      - /data/monitor/grafana/provisioning:/etc/grafana/provisioning
+      - /data/monitor/grafana/data:/var/lib/grafana
+    ports:
+      - "13000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - TZ=Asia/Shanghai
+    restart: always
+    networks:
+      - monitor_network  # 添加网络配置
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.2'
+          memory: 256M
+
+  loki:
+    image: registry.cn-beijing.aliyuncs.com/vtm/loki:3.4.1
+    container_name: loki
+    ports:
+      - "3100:3100"
+    volumes:
+      - /data/monitor/loki/config:/mnt/config
+      - /data/monitor/loki/data:/var/lib/loki
+    command:
+      - -config.file=/mnt/config/loki-config.yaml
+      - -log.level=warn
+    restart: always
+    environment:
+      TZ: Asia/Shanghai
+    networks:
+      - monitor_network  # 添加网络配置
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 4G
+        reservations:
+          cpus: '1.5'
+          memory: 2G
+  
+networks:
+  monitor_network:
+    name: monitor_network
+    driver: bridge

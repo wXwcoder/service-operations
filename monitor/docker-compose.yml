@@ -1,0 +1,100 @@
+version: '3.8'
+
+services:
+  prometheus:
+    image: registry.cn-beijing.aliyuncs.com/vtm/prometheus:latest
+    container_name: monitor_prometheus
+    user: "1000:1000"  # 使用主机上 monitor 用户的 UID 和 GID
+    volumes:
+      - /data/monitor/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - /data/monitor/prometheus/data:/prometheus
+    ports:
+      - "19090:9090"  # 将外部端口 19090 映射到容器的 9090 端口
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=15d'
+    restart: always
+    environment:
+      - TZ=Asia/Shanghai  # 设置时区，例如中国上海
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'  # 限制 CPU 使用量为 0.5 核
+          memory: 512M  # 限制内存使用量为 512MB
+        reservations:
+          cpus: '0.2'  # 预留 CPU 使用量为 0.2 核
+          memory: 256M  # 预留内存使用量为 256MB
+
+  node-exporter:
+    image: registry.cn-beijing.aliyuncs.com/vtm/node-exporter:latest
+    container_name: monitor_node_exporter
+    user: "1000:1000"  # 使用主机上 monitor 用户的 UID 和 GID
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    command:
+      - '--path.procfs=/host/proc'
+      - '--path.sysfs=/host/sys'
+      - '--collector.filesystem.ignored-mount-points="^/(sys|proc|dev|host|etc)($$|/)"'
+      - '--collector.processes'  # 启用进程收集器
+    ports:
+      - "9100:9100"
+    restart: always
+    environment:
+      - TZ=Asia/Shanghai  # 设置时区，例如中国上海
+    deploy:
+      resources:
+        limits:
+          cpus: '0.2'  # 限制 CPU 使用量为 0.2 核
+          memory: 128M  # 限制内存使用量为 128MB
+        reservations:
+          cpus: '0.1'  # 预留 CPU 使用量为 0.1 核
+          memory: 64M  # 预留内存使用量为 64MB
+
+  grafana:
+    image: registry.cn-beijing.aliyuncs.com/vtm/grafana:latest
+    container_name: monitor_grafana
+    user: "1000:1000"  # 使用主机上 monitor 用户的 UID 和 GID
+    volumes:
+      - /data/monitor/grafana/provisioning:/etc/grafana/provisioning
+      - /data/monitor/grafana/data:/var/lib/grafana
+    ports:
+      - "13000:3000"  # 将外部端口 13000 映射到容器的 3000 端口
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - TZ=Asia/Shanghai  # 设置时区，例如中国上海
+    restart: always
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'  # 限制 CPU 使用量为 0.5 核
+          memory: 512M  # 限制内存使用量为 512MB
+        reservations:
+          cpus: '0.2'  # 预留 CPU 使用量为 0.2 核
+          memory: 256M  # 预留内存使用量为 256MB
+  
+  webhook:
+    image: registry.cn-beijing.aliyuncs.com/vtm/alpine:latest
+    container_name: monitor_webhook
+    user: "1000:1000"  # 如果需要，设置用户 ID 和组 ID
+    volumes:
+      - /data/monitor/webhook:/app  # 挂载本地目录到容器内
+    ports:
+      - "19001:19001"  # 将外部端口 19001 映射到容器的 19001 端口
+    command: ["/app/webhook", "19001", "feishu", "https://open.feishu.cn/open-apis/bot/v2/hook/b425f09e-0aad-4565-8062-a8e99a938940"]  # 执行程序及参数
+    restart: always
+    environment:
+      - TZ=Asia/Shanghai  # 设置时区，例如中国上海
+    deploy:
+      resources:
+        limits:
+          cpus: '0.2'  # 限制 CPU 使用量为 0.5 核
+          memory: 128M  # 限制内存使用量为 512MB
+        reservations:
+          cpus: '0.1'  # 预留 CPU 使用量为 0.2 核
+          memory: 64M  # 预留内存使用量为 256MB
+networks:
+  monitor_network:
+    name: monitor_network

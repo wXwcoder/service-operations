@@ -1,0 +1,83 @@
+auth_enabled: false
+
+server:
+  http_listen_port: 3100
+  grpc_listen_port: 9096
+  log_level: debug
+  # 1. 增加此参数：提高服务器接收消息的最大尺寸
+  grpc_server_max_recv_msg_size: 16777216  # 16 MB
+  # 2. 增加此参数：提高服务器发送消息的最大尺寸（用于双向通信）
+  grpc_server_max_send_msg_size: 16777216  # 16 MB
+  grpc_server_max_concurrent_streams: 1000
+
+common:
+  instance_addr: 127.0.0.1
+  # 重要：将路径从 /tmp 改为持久化目录，避免重启丢失数据
+  path_prefix: /var/lib/loki
+  storage:
+    filesystem:
+      # 请确保这些目录存在且有写入权限 (mkdir -p /var/lib/loki/{chunks,rules})
+      chunks_directory: /var/lib/loki/chunks
+      rules_directory: /var/lib/loki/rules
+  replication_factor: 1
+  ring:
+    kvstore:
+      store: inmemory
+
+compactor:
+  # Compactor的工作目录，也必须持久化，用于存储标记文件等
+  working_directory: /var/lib/loki/compactor
+  # 执行压缩和保留检查的频率
+  compaction_interval: 10m
+  # 【核心开关】必须设为 true 才能启用日志保留删除功能
+  retention_enabled: true
+  # 数据被标记删除后，延迟2小时再物理删除，提供安全缓冲
+  retention_delete_delay: 2h
+  # 删除请求的存储后端，必须与下方的 object_store 类型一致
+  delete_request_store: filesystem
+
+query_range:
+  results_cache:
+    cache:
+      embedded_cache:
+        enabled: true
+        max_size_mb: 100
+
+limits_config:
+  # 【日志保留时长】设为 360h (15天)
+  retention_period: 360h
+  # 查询时最多回溯15天，与保留策略保持一致
+  max_query_lookback: 360h
+  # 启用指标聚合缓存，提升仪表盘等重复聚合查询性能
+  metric_aggregation_enabled: true
+
+schema_config:
+  configs:
+    - from: 2020-10-24
+      # 使用 TSDB 索引类型（已弃用 Legacy 类型）
+      store: tsdb
+      # 对象存储类型，与 compactor.delete_request_store 一致
+      object_store: filesystem
+      schema: v13
+      index:
+        prefix: index_
+        # 重要：使用 Compactor 进行保留，索引周期必须为 24h
+        period: 24h
+
+pattern_ingester:
+  enabled: true
+  metric_aggregation:
+    loki_address: localhost:3100
+
+ruler:
+  alertmanager_url: http://localhost:9093
+
+frontend:
+  encoding: protobuf
+
+# 可选的性能调优配置，您可以根据需要添加
+# ingester:
+#   chunk_block_size: 262144
+#   chunk_target_size: 1572864
+#   chunk_idle_period: 1h
+#   max_chunk_age: 2h
