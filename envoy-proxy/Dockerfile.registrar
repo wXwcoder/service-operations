@@ -1,0 +1,15 @@
+FROM python:3.9-alpine
+
+WORKDIR /app
+
+# 安装依赖
+RUN apk add --no-cache curl
+
+# 复制脚本
+COPY scripts/register-service.py .
+
+# 安装Python依赖
+RUN pip install requests
+
+# 等待服务启动并注册
+CMD ["sh", "-c", "echo '等待服务启动...' && sleep 30 && python register-service.py"]

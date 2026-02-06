@@ -1,0 +1,146 @@
+admin:
+  access_log_path: /tmp/admin_access.log
+  address:
+    socket_address:
+      address: 0.0.0.0
+      port_value: 9901
+
+static_resources:
+  listeners:
+  # 主UDP监听器 - 接收客户端连接
+  - name: main_udp_listener
+    address:
+      socket_address:
+        protocol: UDP
+        address: 0.0.0.0
+        port_value: 10000
+    listener_filters:
+    - name: envoy.filters.udp.udp_proxy
+      typed_config:
+        "@type": type.googleapis.com/envoy.extensions.filters.udp.udp_proxy.v3.UdpProxyConfig
+        stat_prefix: main_udp_proxy
+        # 使用基于目标端口的路由
+        matcher:
+          on_no_match:
+            action:
+              name: route
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.udp.udp_proxy.v3.Route
+                cluster: dynamic_game_servers
+        # 会话超时设置
+        idle_timeout: 60s
+
+  # 健康检查监听器
+  - name: health_check_listener
+    address:
+      socket_address:
+        protocol: TCP
+        address: 0.0.0.0
+        port_value: 8001
+    filter_chains:
+    - filters:
+      - name: envoy.filters.network.http_connection_manager
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+          stat_prefix: health_check
+          route_config:
+            name: local_route
+            virtual_hosts:
+            - name: local_service
+              domains: ["*"]
+              routes:
+              - match:
+                  prefix: "/ready"
+                route:
+                  cluster: game_servers_cluster
+                  prefix_rewrite: "/health"
+              - match:
+                  prefix: "/healthz"
+                direct_response:
+                  status: 200
+                  body:
+                    inline_string: "envoy proxy is healthy\n"
+          http_filters:
+          - name: envoy.filters.http.router
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+
+  clusters:
+  # 静态游戏服务器集群（用于演示）
+  - name: game_servers_cluster
+    connect_timeout: 0.25s
+    type: STRICT_DNS
+    lb_policy: ROUND_ROBIN
+    load_assignment:
+      cluster_name: game_servers_cluster
+      endpoints:
+      - lb_endpoints:
+        - endpoint:
+            address:
+              socket_address:
+                address: game-server-1
+                port_value: 8080
+        - endpoint:
+            address:
+              socket_address:
+                address: game-server-2
+                port_value: 8081
+        - endpoint:
+            address:
+              socket_address:
+                address: game-server-3
+                port_value: 8082
+
+  # 动态游戏服务器集群（从Consul发现）
+  - name: dynamic_game_servers
+    connect_timeout: 0.25s
+    type: EDS
+    lb_policy: MAGLEV
+    eds_cluster_config:
+      eds_config:
+        resource_api_version: V3
+        api_config_source:
+          api_type: GRPC
+          transport_api_version: V3
+          grpc_services:
+          - envoy_grpc:
+              cluster_name: consul_xds_cluster
+
+  # Consul XDS集群
+  - name: consul_xds_cluster
+    type: STRICT_DNS
+    connect_timeout: 1s
+    lb_policy: ROUND_ROBIN
+    load_assignment:
+      cluster_name: consul_xds_cluster
+      endpoints:
+      - lb_endpoints:
+        - endpoint:
+            address:
+              socket_address:
+                address: consul-server
+                port_value: 8500
+
+# 动态资源配置
+dynamic_resources:
+  lds_config:
+    resource_api_version: V3
+    api_config_source:
+      api_type: GRPC
+      transport_api_version: V3
+      grpc_services:
+      - envoy_grpc:
+          cluster_name: consul_xds_cluster
+  cds_config:
+    resource_api_version: V3
+    api_config_source:
+      api_type: GRPC
+      transport_api_version: V3
+      grpc_services:
+      - envoy_grpc:
+          cluster_name: consul_xds_cluster
+
+# 监控配置
+node:
+  id: envoy-proxy-1
+  cluster: game-servers-proxy

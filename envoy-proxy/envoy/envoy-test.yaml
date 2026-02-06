@@ -1,0 +1,39 @@
+admin:
+  access_log_path: /tmp/admin_access.log
+  address:
+    socket_address:
+      address: 0.0.0.0
+      port_value: 9901
+
+static_resources:
+  listeners:
+  # 游戏服务器1的UDP监听器
+  - name: game_server_1_listener
+    address:
+      socket_address:
+        protocol: UDP
+        address: 0.0.0.0
+        port_value: 10000
+    listener_filters:
+    - name: envoy.filters.udp.udp_proxy
+      typed_config:
+        "@type": type.googleapis.com/envoy.extensions.filters.udp.udp_proxy.v3.UdpProxyConfig
+        stat_prefix: game_server_1_proxy
+        cluster: game_server_1_cluster
+        idle_timeout: 60s
+
+  clusters:
+  # 游戏服务器1集群
+  - name: game_server_1_cluster
+    connect_timeout: 0.25s
+    type: STRICT_DNS
+    lb_policy: ROUND_ROBIN
+    load_assignment:
+      cluster_name: game_server_1_cluster
+      endpoints:
+      - lb_endpoints:
+        - endpoint:
+            address:
+              socket_address:
+                address: game-server-1
+                port_value: 8080
