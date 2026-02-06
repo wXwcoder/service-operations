@@ -6,24 +6,96 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
+
+	consulapi "github.com/hashicorp/consul/api"
 )
+
+// ConsulRegistry Consul服务注册器
+type ConsulRegistry struct {
+	Client *consulapi.Client
+}
+
+// NewConsulRegistry 创建Consul注册器
+func NewConsulRegistry(consulAddr string) (*ConsulRegistry, error) {
+	config := consulapi.DefaultConfig()
+	config.Address = consulAddr
+
+	client, err := consulapi.NewClient(config)
+	if err != nil {
+		return nil, fmt.Errorf("创建Consul客户端失败: %v", err)
+	}
+
+	return &ConsulRegistry{Client: client}, nil
+}
+
+// RegisterGameServer 注册游戏服务器到Consul
+func (cr *ConsulRegistry) RegisterGameServer(serverID string, serverIP string, serverPort int) error {
+	healthPort := serverPort + 1000
+
+	registration := &consulapi.AgentServiceRegistration{
+		ID:      serverID,
+		Name:    "game-server",
+		Tags:    []string{"udp", "game", "battle"},
+		Address: serverIP,
+		Port:    serverPort,
+		Meta: map[string]string{
+			"protocol":      "udp",
+			"server_type":   "battle",
+			"registered_at": time.Now().Format("2006-01-02 15:04:05"),
+		},
+		Check: &consulapi.AgentServiceCheck{
+			DeregisterCriticalServiceAfter: "5m",
+			HTTP:                           fmt.Sprintf("http://%s:%d/health", serverIP, healthPort),
+			Interval:                       "10s",
+			Timeout:                        "2s",
+		},
+	}
+
+	err := cr.Client.Agent().ServiceRegister(registration)
+	if err != nil {
+		return fmt.Errorf("注册服务到Consul失败: %v", err)
+	}
+
+	log.Printf("✅ 游戏服务器 %s 已成功注册到Consul: %s:%d", serverID, serverIP, serverPort)
+	return nil
+}
+
+// DeregisterGameServer 从Consul注销游戏服务器
+func (cr *ConsulRegistry) DeregisterGameServer(serverID string) error {
+	err := cr.Client.Agent().ServiceDeregister(serverID)
+	if err != nil {
+		return fmt.Errorf("从Consul注销服务失败: %v", err)
+	}
+
+	log.Printf("✅ 游戏服务器 %s 已从Consul注销", serverID)
+	return nil
+}
 
 // GameServer 游戏服务器结构体
 type GameServer struct {
 	ServerID   string
 	ListenPort int
 	Conn       *net.UDPConn
+	Registry   *ConsulRegistry
 }
 
 // NewGameServer 创建新的游戏服务器实例
-func NewGameServer(serverID string, port int) *GameServer {
+func NewGameServer(serverID string, port int, consulAddr string) (*GameServer, error) {
+	registry, err := NewConsulRegistry(consulAddr)
+	if err != nil {
+		return nil, fmt.Errorf("创建Consul注册器失败: %v", err)
+	}
+
 	return &GameServer{
 		ServerID:   serverID,
 		ListenPort: port,
-	}
+		Registry:   registry,
+	}, nil
 }
 
 // Start 启动UDP服务器
@@ -128,8 +200,48 @@ func startHealthCheckServer(port int) {
 	}
 }
 
+// RegisterToConsul 注册到Consul
+func (gs *GameServer) RegisterToConsul() error {
+	if gs.Registry == nil {
+		return fmt.Errorf("Consul注册器未初始化")
+	}
+
+	// 获取容器IP地址
+	serverIP := os.Getenv("CONTAINER_IP")
+	if serverIP == "" {
+		serverIP = gs.ServerID // 使用服务名作为IP（在Docker网络中可用）
+	}
+
+	err := gs.Registry.RegisterGameServer(gs.ServerID, serverIP, gs.ListenPort)
+	if err != nil {
+		return fmt.Errorf("注册到Consul失败: %v", err)
+	}
+
+	return nil
+}
+
+// DeregisterFromConsul 从Consul注销
+func (gs *GameServer) DeregisterFromConsul() error {
+	if gs.Registry == nil {
+		return fmt.Errorf("Consul注册器未初始化")
+	}
+
+	err := gs.Registry.DeregisterGameServer(gs.ServerID)
+	if err != nil {
+		return fmt.Errorf("从Consul注销失败: %v", err)
+	}
+
+	return nil
+}
+
 // Stop 停止服务器
 func (gs *GameServer) Stop() {
+	// 从Consul注销
+	if err := gs.DeregisterFromConsul(); err != nil {
+		log.Printf("⚠️ 从Consul注销失败: %v", err)
+	}
+
+	// 关闭UDP连接
 	if gs.Conn != nil {
 		gs.Conn.Close()
 		log.Printf("游戏服务器 %s 已停止", gs.ServerID)
@@ -151,19 +263,59 @@ func main() {
 		}
 	}
 
-	// 创建并启动游戏服务器
-	gameServer := NewGameServer(serverID, port)
+	// Consul地址配置
+	consulAddr := os.Getenv("CONSUL_URL")
+	if consulAddr == "" {
+		consulAddr = "consul-server:8500"
+	}
 
-	if err := gameServer.Start(); err != nil {
-		log.Fatalf("启动游戏服务器失败: %v", err)
+	// 创建并启动游戏服务器
+	gameServer, err := NewGameServer(serverID, port, consulAddr)
+	if err != nil {
+		log.Fatalf("创建游戏服务器失败: %v", err)
 	}
 
 	// 启动HTTP健康检查服务器
 	go startHealthCheckServer(port + 1000)
 
-	// 注册到Consul（在实际部署中实现）
-	log.Printf("游戏服务器 %s 准备就绪，等待连接...", serverID)
+	// 启动UDP服务器
+	if err := gameServer.Start(); err != nil {
+		log.Fatalf("启动游戏服务器失败: %v", err)
+	}
+
+	// 自动注册到Consul
+	log.Printf("正在注册到Consul...")
+	if err := gameServer.RegisterToConsul(); err != nil {
+		log.Printf("⚠️ 注册到Consul失败: %v", err)
+		log.Printf("⚠️ 游戏服务器将继续运行，但服务发现可能不可用")
+	} else {
+		log.Printf("✅ 游戏服务器 %s 已成功注册到Consul", serverID)
+	}
+
+	log.Printf("🎮 游戏服务器 %s 准备就绪，监听端口: %d", serverID, port)
+
+	// 设置信号处理，优雅关闭
+	setupSignalHandling(gameServer)
 
 	// 等待中断信号
 	select {}
+}
+
+// setupSignalHandling 设置信号处理，实现优雅关闭
+func setupSignalHandling(gameServer *GameServer) {
+	// 创建信号通道
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+
+	// 启动信号处理协程
+	go func() {
+		sig := <-sigChan
+		log.Printf("收到信号: %v，正在优雅关闭...", sig)
+
+		// 停止游戏服务器
+		gameServer.Stop()
+
+		log.Printf("游戏服务器已优雅关闭")
+		os.Exit(0)
+	}()
 }
