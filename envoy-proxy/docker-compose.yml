@@ -39,7 +39,6 @@ services:
       - CONSUL_ADDR=consul-server:8500
       - XDS_PORT=18000
       - ENVOY_NODE_ID=proxy-1   # 必须与 Envoy 的 --service-node 一致，否则 Envoy 拿不到动态配置
-      - DEBUG_LOG_PATH=/.cursor/debug.log
     volumes:
       - ./.cursor:/.cursor
     depends_on:

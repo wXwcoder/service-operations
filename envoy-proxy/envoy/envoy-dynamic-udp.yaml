@@ -1,6 +1,6 @@
 node:
   cluster: game_proxy_cluster
-  id: envoy_instance_01
+  id: proxy-1 #envoy_instance_01
 
 dynamic_resources:
   lds_config:

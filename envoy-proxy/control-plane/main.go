@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"net"
@@ -143,44 +142,44 @@ func (cp *ControlPlane) updateEnvoyConfig() {
 
 	// Envoy 拉取配置时使用的 node.id 必须与 SetSnapshot 的 node 一致。go-control-plane 用 request.Node 的 hash 作为 key。
 	// 为 bootstrap 中的 id (envoy_instance_01) 与 docker-compose --service-node (proxy-1) 都设置快照，避免不一致导致 listeners 为空
-	nodeIDs := []string{"envoy_instance_01", "proxy-1"}
+	nodeIDs := []string{"proxy-1"}
 	if custom := os.Getenv("ENVOY_NODE_ID"); custom != "" {
 		nodeIDs = []string{custom}
 	}
 	// #region agent log
-	debugLogPath := os.Getenv("DEBUG_LOG_PATH")
-	if debugLogPath == "" {
-		debugLogPath = "e:\\xcode\\service-operations\\envoy-proxy\\.cursor\\debug.log"
-	}
-	if f, e := os.OpenFile(debugLogPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644); e == nil {
-		b, _ := json.Marshal(map[string]interface{}{"sessionId": "debug-session", "hypothesisId": "H2", "location": "main.go:SetSnapshot", "message": "before SetSnapshot", "data": map[string]interface{}{"snapshotVersion": snapshot.GetVersion(resource.ListenerType), "nodeIDs": nodeIDs}, "timestamp": time.Now().UnixMilli()})
-		f.Write(append(b, '\n'))
-		f.Close()
-	}
+	// debugLogPath := os.Getenv("DEBUG_LOG_PATH")
+	// if debugLogPath == "" {
+	// 	debugLogPath = "e:\\xcode\\service-operations\\envoy-proxy\\.cursor\\debug.log"
+	// }
+	// if f, e := os.OpenFile(debugLogPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644); e == nil {
+	// 	b, _ := json.Marshal(map[string]interface{}{"sessionId": "debug-session", "hypothesisId": "H2", "location": "main.go:SetSnapshot", "message": "before SetSnapshot", "data": map[string]interface{}{"snapshotVersion": snapshot.GetVersion(resource.ListenerType), "nodeIDs": nodeIDs}, "timestamp": time.Now().UnixMilli()})
+	// 	f.Write(append(b, '\n'))
+	// 	f.Close()
+	// }
 	// #endregion
 	for _, nodeID := range nodeIDs {
 		if err := cp.cache.SetSnapshot(cp.ctx, nodeID, snapshot); err != nil {
 			// #region agent log
-			dp := os.Getenv("DEBUG_LOG_PATH")
-			if dp == "" {
-				dp = "e:\\xcode\\service-operations\\envoy-proxy\\.cursor\\debug.log"
-			}
-			if f, e := os.OpenFile(dp, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644); e == nil {
-				b, _ := json.Marshal(map[string]interface{}{"sessionId": "debug-session", "hypothesisId": "H1", "location": "main.go:SetSnapshot", "message": "SetSnapshot failed", "data": map[string]interface{}{"error": err.Error(), "nodeID": nodeID}, "timestamp": time.Now().UnixMilli()})
-				f.Write(append(b, '\n'))
-				f.Close()
-			}
+			// dp := os.Getenv("DEBUG_LOG_PATH")
+			// if dp == "" {
+			// 	dp = "e:\\xcode\\service-operations\\envoy-proxy\\.cursor\\debug.log"
+			// }
+			// if f, e := os.OpenFile(dp, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644); e == nil {
+			// 	b, _ := json.Marshal(map[string]interface{}{"sessionId": "debug-session", "hypothesisId": "H1", "location": "main.go:SetSnapshot", "message": "SetSnapshot failed", "data": map[string]interface{}{"error": err.Error(), "nodeID": nodeID}, "timestamp": time.Now().UnixMilli()})
+			// 	f.Write(append(b, '\n'))
+			// 	f.Close()
+			// }
 			// #endregion
 			log.Printf("❌ 设置快照失败 (node=%s): %v", nodeID, err)
 			return
 		}
 	}
 	// #region agent log
-	if f, e := os.OpenFile(debugLogPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644); e == nil {
-		b, _ := json.Marshal(map[string]interface{}{"sessionId": "debug-session", "runId": "post-fix", "hypothesisId": "H3", "location": "main.go:SetSnapshot", "message": "SetSnapshot success", "data": map[string]interface{}{"version": snapshot.GetVersion(resource.ListenerType), "nodeIDs": nodeIDs}, "timestamp": time.Now().UnixMilli()})
-		f.Write(append(b, '\n'))
-		f.Close()
-	}
+	// if f, e := os.OpenFile(debugLogPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644); e == nil {
+	// 	b, _ := json.Marshal(map[string]interface{}{"sessionId": "debug-session", "runId": "post-fix", "hypothesisId": "H3", "location": "main.go:SetSnapshot", "message": "SetSnapshot success", "data": map[string]interface{}{"version": snapshot.GetVersion(resource.ListenerType), "nodeIDs": nodeIDs}, "timestamp": time.Now().UnixMilli()})
+	// 	f.Write(append(b, '\n'))
+	// 	f.Close()
+	// }
 	// #endregion
 
 	log.Println("✅ Envoy配置更新完成")
@@ -238,15 +237,15 @@ func (cp *ControlPlane) buildSnapshot(services []*consulapi.ServiceEntry) (*cach
 	// 构建快照 - 仅包含集群与监听器。UDP 代理不需要 RouteConfiguration；
 	// 若提供 Route 但无 listener 引用，go-control-plane 一致性检查会报错：referenced 0 != resources 1
 	// #region agent log
-	dp := os.Getenv("DEBUG_LOG_PATH")
-	if dp == "" {
-		dp = "e:\\xcode\\service-operations\\envoy-proxy\\.cursor\\debug.log"
-	}
-	if f, e := os.OpenFile(dp, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644); e == nil {
-		b, _ := json.Marshal(map[string]interface{}{"sessionId": "debug-session", "runId": "post-fix", "hypothesisId": "H3", "location": "main.go:buildSnapshot", "message": "snapshot without RouteType", "data": map[string]interface{}{"clusterCount": len(clusters), "listenerCount": len(listeners), "hasRouteType": false}, "timestamp": time.Now().UnixMilli()})
-		f.Write(append(b, '\n'))
-		f.Close()
-	}
+	// dp := os.Getenv("DEBUG_LOG_PATH")
+	// if dp == "" {
+	// 	dp = "e:\\xcode\\service-operations\\envoy-proxy\\.cursor\\debug.log"
+	// }
+	// if f, e := os.OpenFile(dp, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644); e == nil {
+	// 	b, _ := json.Marshal(map[string]interface{}{"sessionId": "debug-session", "runId": "post-fix", "hypothesisId": "H3", "location": "main.go:buildSnapshot", "message": "snapshot without RouteType", "data": map[string]interface{}{"clusterCount": len(clusters), "listenerCount": len(listeners), "hasRouteType": false}, "timestamp": time.Now().UnixMilli()})
+	// 	f.Write(append(b, '\n'))
+	// 	f.Close()
+	// }
 	// #endregion
 
 	snapshot, err := cache.NewSnapshot(
