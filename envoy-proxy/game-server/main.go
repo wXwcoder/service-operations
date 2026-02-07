@@ -34,19 +34,20 @@ func NewConsulRegistry(consulAddr string) (*ConsulRegistry, error) {
 }
 
 // RegisterGameServer 注册游戏服务器到Consul
-func (cr *ConsulRegistry) RegisterGameServer(serverID string, serverIP string, serverPort int) error {
+func (cr *ConsulRegistry) RegisterGameServer(serverID string, serverIP string, serverPort int, externalPort int) error {
 	healthPort := serverPort + 1000
 
 	registration := &consulapi.AgentServiceRegistration{
 		ID:      serverID,
-		Name:    "game-server",
-		Tags:    []string{"udp", "game", "battle"},
+		Name:    "game-server", // 修改服务名为game-server
+		Tags:    []string{"udp", "game"},
 		Address: serverIP,
 		Port:    serverPort,
 		Meta: map[string]string{
-			"protocol":      "udp",
-			"server_type":   "battle",
-			"registered_at": time.Now().Format("2006-01-02 15:04:05"),
+			"protocol":            "udp",
+			"server_type":         "game",
+			"registered_at":       time.Now().Format("2006-01-02 15:04:05"),
+			"envoy_external_port": fmt.Sprintf("%d", externalPort), // 为Envoy动态端口转发指定外部端口
 		},
 		Check: &consulapi.AgentServiceCheck{
 			DeregisterCriticalServiceAfter: "5m",
@@ -61,7 +62,7 @@ func (cr *ConsulRegistry) RegisterGameServer(serverID string, serverIP string, s
 		return fmt.Errorf("注册服务到Consul失败: %v", err)
 	}
 
-	log.Printf("✅ 游戏服务器 %s 已成功注册到Consul: %s:%d", serverID, serverIP, serverPort)
+	log.Printf("✅ 游戏服务器 %s 已成功注册到Consul: %s:%d (外部端口: %d)", serverID, serverIP, serverPort, externalPort)
 	return nil
 }
 
@@ -78,23 +79,25 @@ func (cr *ConsulRegistry) DeregisterGameServer(serverID string) error {
 
 // GameServer 游戏服务器结构体
 type GameServer struct {
-	ServerID   string
-	ListenPort int
-	Conn       *net.UDPConn
-	Registry   *ConsulRegistry
+	ServerID     string
+	ListenPort   int
+	ExternalPort int // 对应的外部UDP端口
+	Conn         *net.UDPConn
+	Registry     *ConsulRegistry
 }
 
 // NewGameServer 创建新的游戏服务器实例
-func NewGameServer(serverID string, port int, consulAddr string) (*GameServer, error) {
+func NewGameServer(serverID string, port int, externalPort int, consulAddr string) (*GameServer, error) {
 	registry, err := NewConsulRegistry(consulAddr)
 	if err != nil {
 		return nil, fmt.Errorf("创建Consul注册器失败: %v", err)
 	}
 
 	return &GameServer{
-		ServerID:   serverID,
-		ListenPort: port,
-		Registry:   registry,
+		ServerID:     serverID,
+		ListenPort:   port,
+		ExternalPort: externalPort,
+		Registry:     registry,
 	}, nil
 }
 
@@ -212,7 +215,7 @@ func (gs *GameServer) RegisterToConsul() error {
 		serverIP = gs.ServerID // 使用服务名作为IP（在Docker网络中可用）
 	}
 
-	err := gs.Registry.RegisterGameServer(gs.ServerID, serverIP, gs.ListenPort)
+	err := gs.Registry.RegisterGameServer(gs.ServerID, serverIP, gs.ListenPort, gs.ExternalPort)
 	if err != nil {
 		return fmt.Errorf("注册到Consul失败: %v", err)
 	}
@@ -232,6 +235,19 @@ func (gs *GameServer) DeregisterFromConsul() error {
 	}
 
 	return nil
+}
+
+// registerWithRetry 带重试的 Consul 注册，应对 Consul 未就绪或重启
+func registerWithRetry(gs *GameServer, totalWait time.Duration, interval time.Duration) {
+	deadline := time.Now().Add(totalWait)
+	for time.Now().Before(deadline) {
+		if err := gs.RegisterToConsul(); err == nil {
+			return
+		}
+		log.Printf("⚠️ 注册到Consul失败，%v 后重试...", interval)
+		time.Sleep(interval)
+	}
+	log.Printf("⚠️ 游戏服务器将继续运行，但服务发现可能不可用（Consul 注册超时）")
 }
 
 // Stop 停止服务器
@@ -263,14 +279,24 @@ func main() {
 		}
 	}
 
-	// Consul地址配置
+	// 从环境变量获取外部端口配置
+	externalPortStr := os.Getenv("EXTERNAL_PORT")
+	externalPort := port + 2000 // 默认外部端口为内部端口+2000
+	if externalPortStr != "" {
+		if ep, err := strconv.Atoi(externalPortStr); err == nil {
+			externalPort = ep
+		}
+	}
+
+	// Consul地址配置（支持 http://host:port，客户端会去掉 scheme）
 	consulAddr := os.Getenv("CONSUL_URL")
 	if consulAddr == "" {
 		consulAddr = "consul-server:8500"
 	}
+	consulAddr = strings.TrimPrefix(strings.TrimPrefix(consulAddr, "http://"), "https://")
 
 	// 创建并启动游戏服务器
-	gameServer, err := NewGameServer(serverID, port, consulAddr)
+	gameServer, err := NewGameServer(serverID, port, externalPort, consulAddr)
 	if err != nil {
 		log.Fatalf("创建游戏服务器失败: %v", err)
 	}
@@ -283,16 +309,11 @@ func main() {
 		log.Fatalf("启动游戏服务器失败: %v", err)
 	}
 
-	// 自动注册到Consul
+	// 自动注册到Consul（带重试，应对 Consul 未就绪或重启）
 	log.Printf("正在注册到Consul...")
-	if err := gameServer.RegisterToConsul(); err != nil {
-		log.Printf("⚠️ 注册到Consul失败: %v", err)
-		log.Printf("⚠️ 游戏服务器将继续运行，但服务发现可能不可用")
-	} else {
-		log.Printf("✅ 游戏服务器 %s 已成功注册到Consul", serverID)
-	}
+	registerWithRetry(gameServer, 30*time.Second, 2*time.Second)
 
-	log.Printf("🎮 游戏服务器 %s 准备就绪，监听端口: %d", serverID, port)
+	log.Printf("🎮 游戏服务器 %s 准备就绪，监听端口: %d (外部端口: %d)", serverID, port, externalPort)
 
 	// 设置信号处理，优雅关闭
 	setupSignalHandling(gameServer)

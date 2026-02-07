@@ -126,7 +126,7 @@ func main() {
 	// 从环境变量获取配置
 	host := os.Getenv("SERVER_HOST")
 	if host == "" {
-		host = "envoy-proxy"
+		host = "localhost"
 	}
 
 	// 显示服务器选择菜单

@@ -1,41 +1,70 @@
-version: '3.8'
-
 services:
-  # Consul服务发现
+  # Consul服务发现（启用xDS服务网格）
   consul-server:
     image: consul:1.15
     container_name: consul-server
     ports:
       - "8500:8500"  # Web UI
+      - "8502:8502"  # gRPC端口（xDS）
       - "8600:8600/udp"  # DNS
     volumes:
-      - ./consul/config.json:/consul/config/config.json:ro
+      - ./consul/config-enhanced.json:/consul/config/config.json:ro
       - consul-data:/consul/data
     command: 
       - "agent"
+      - "-server"
+      - "-bootstrap-expect=1"
+      - "-ui"
       - "-config-file=/consul/config/config.json"
       - "-client=0.0.0.0"
+    healthcheck:
+      test: ["CMD", "consul", "catalog", "datacenters"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
     networks:
       - game-network
 
-  # Envoy代理
+  # xDS控制平面服务 - 动态生成Envoy配置
+  control-plane:
+    build:
+      context: ./control-plane
+      dockerfile: Dockerfile
+    container_name: control-plane
+    ports:
+      - "18000:18000"  # xDS gRPC端口
+      - "8080:8080"    # 健康检查端口
+    environment:
+      - CONSUL_ADDR=consul-server:8500
+      - XDS_PORT=18000
+      - ENVOY_NODE_ID=proxy-1   # 必须与 Envoy 的 --service-node 一致，否则 Envoy 拿不到动态配置
+      - DEBUG_LOG_PATH=/.cursor/debug.log
+    volumes:
+      - ./.cursor:/.cursor
+    depends_on:
+      - consul-server
+    networks:
+      - game-network
+    restart: unless-stopped
+
+  # Envoy代理 - 从控制平面获取动态配置
   envoy-proxy:
     image: envoyproxy/envoy:v1.28-latest
     container_name: envoy-proxy
     ports:
-      - "10000:10000/udp"  # 游戏服务器1代理端口
-      - "10001:10001/udp"  # 游戏服务器2代理端口
-      - "10002:10002/udp"  # 游戏服务器3代理端口
+      - "10000-10100:10000-10100/udp"  # 动态UDP端口范围
       - "9901:9901"  # Envoy管理端口
     volumes:
-      - ./envoy/envoy-precise-routing.yaml:/etc/envoy/envoy.yaml:ro
+      - ./envoy/envoy-dynamic-udp.yaml:/etc/envoy/envoy.yaml:ro
     depends_on:
       - consul-server
-      - game-server-1
-      - game-server-2
-      - game-server-3
+      - control-plane
     networks:
       - game-network
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+      - "consul-server:127.0.0.1"  # 映射consul-server到本地主机
     command: 
       - "-c"
       - "/etc/envoy/envoy.yaml"
@@ -43,8 +72,9 @@ services:
       - "game-proxy"
       - "--service-node"
       - "proxy-1"
+    restart: unless-stopped
 
-  # 游戏服务器实例1
+  # 游戏服务器实例1 - 外部端口 10000
   game-server-1:
     build:
       context: ./game-server
@@ -56,18 +86,20 @@ services:
     environment:
       - SERVER_ID=game-server-1
       - SERVER_PORT=8080
+      - EXTERNAL_PORT=10000  # 对应外部UDP端口
       - CONSUL_URL=http://consul-server:8500
     networks:
       - game-network
     depends_on:
-      - consul-server
+      consul-server:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "nc", "-z", "localhost", "8080"]
       interval: 10s
       timeout: 5s
       retries: 3
 
-  # 游戏服务器实例2
+  # 游戏服务器实例2 - 外部端口 10001
   game-server-2:
     build:
       context: ./game-server
@@ -79,18 +111,20 @@ services:
     environment:
       - SERVER_ID=game-server-2
       - SERVER_PORT=8081
+      - EXTERNAL_PORT=10001  # 对应外部UDP端口
       - CONSUL_URL=http://consul-server:8500
     networks:
       - game-network
     depends_on:
-      - consul-server
+      consul-server:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "nc", "-z", "localhost", "8081"]
       interval: 10s
       timeout: 5s
       retries: 3
 
-  # 游戏服务器实例3
+  # 游戏服务器实例3 - 外部端口 10002
   game-server-3:
     build:
       context: ./game-server
@@ -102,18 +136,18 @@ services:
     environment:
       - SERVER_ID=game-server-3
       - SERVER_PORT=8082
+      - EXTERNAL_PORT=10002  # 对应外部UDP端口
       - CONSUL_URL=http://consul-server:8500
     networks:
       - game-network
     depends_on:
-      - consul-server
+      consul-server:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "nc", "-z", "localhost", "8082"]
       interval: 10s
       timeout: 5s
       retries: 3
-
-
 
   # 测试客户端
   # test-client:
@@ -134,3 +168,6 @@ volumes:
 networks:
   game-network:
     driver: bridge
+    ipam:
+      config:
+        - subnet: 172.18.0.0/16
